@@ -1,3 +1,14 @@
+
+/**
+ * Save timer references to avoid Sinon interfering (see GH-237).
+ */
+
+var Date = window.Date;
+var setTimeout = window.setTimeout;
+var setInterval = window.setInterval;
+var clearTimeout = window.clearTimeout;
+var clearInterval = window.clearInterval;
+
 /**
  * Node shims.
  *
@@ -7,38 +18,10 @@
  * the browser.
  */
 
-process = {};
+var process = {};
 process.exit = function(status){};
 process.stdout = {};
 global = window;
-
-/**
- * next tick implementation.
- */
-
-process.nextTick = (function(){
-  // postMessage behaves badly on IE8
-  if (window.ActiveXObject || !window.postMessage) {
-    return function(fn){ fn() };
-  }
-
-  // based on setZeroTimeout by David Baron
-  // - http://dbaron.org/log/20100309-faster-timeouts
-  var timeouts = []
-    , name = 'mocha-zero-timeout'
-
-  window.addEventListener('message', function(e){
-    if (e.source == window && e.data == name) {
-      if (e.stopPropagation) e.stopPropagation();
-      if (timeouts.length) timeouts.shift()();
-    }
-  }, true);
-
-  return function(fn){
-    timeouts.push(fn);
-    window.postMessage(name, '*');
-  }
-})();
 
 /**
  * Remove uncaughtException listener.
@@ -62,52 +45,74 @@ process.on = function(e, fn){
   }
 };
 
-// boot
-;(function(){
+/**
+ * Expose mocha.
+ */
 
-  /**
-   * Expose mocha.
-   */
+var Mocha = window.Mocha = require('mocha'),
+    mocha = window.mocha = new Mocha({ reporter: 'html' });
 
-  var Mocha = window.Mocha = require('mocha'),
-      mocha = window.mocha = new Mocha({ reporter: 'html' });
+var immediateQueue = []
+  , immediateTimeout;
 
-  /**
-   * Override ui to ensure that the ui functions are initialized.
-   * Normally this would happen in Mocha.prototype.loadFiles.
-   */
+function timeslice() {
+  var immediateStart = new Date().getTime();
+  while (immediateQueue.length && (new Date().getTime() - immediateStart) < 100) {
+    immediateQueue.shift()();
+  }
+  if (immediateQueue.length) {
+    immediateTimeout = setTimeout(timeslice, 0);
+  } else {
+    immediateTimeout = null;
+  }
+}
 
-  mocha.ui = function(ui){
-    Mocha.prototype.ui.call(this, ui);
-    this.suite.emit('pre-require', window, null, this);
-    return this;
-  };
+/**
+ * High-performance override of Runner.immediately.
+ */
 
-  /**
-   * Setup mocha with the given setting options.
-   */
+Mocha.Runner.immediately = function(callback) {
+  immediateQueue.push(callback);
+  if (!immediateTimeout) {
+    immediateTimeout = setTimeout(timeslice, 0);
+  }
+};
 
-  mocha.setup = function(opts){
-    if ('string' == typeof opts) opts = { ui: opts };
-    for (var opt in opts) this[opt](opts[opt]);
-    return this;
-  };
+/**
+ * Override ui to ensure that the ui functions are initialized.
+ * Normally this would happen in Mocha.prototype.loadFiles.
+ */
 
-  /**
-   * Run mocha, returning the Runner.
-   */
+mocha.ui = function(ui){
+  Mocha.prototype.ui.call(this, ui);
+  this.suite.emit('pre-require', window, null, this);
+  return this;
+};
 
-  mocha.run = function(fn){
-    var options = mocha.options;
-    mocha.globals('location');
+/**
+ * Setup mocha with the given setting options.
+ */
 
-    var query = Mocha.utils.parseQuery(window.location.search || '');
-    if (query.grep) mocha.grep(query.grep);
-    if (query.invert) mocha.invert();
+mocha.setup = function(opts){
+  if ('string' == typeof opts) opts = { ui: opts };
+  for (var opt in opts) this[opt](opts[opt]);
+  return this;
+};
 
-    return Mocha.prototype.run.call(mocha, function(){
-      Mocha.utils.highlightTags('code');
-      if (fn) fn();
-    });
-  };
-})();
+/**
+ * Run mocha, returning the Runner.
+ */
+
+mocha.run = function(fn){
+  var options = mocha.options;
+  mocha.globals('location');
+
+  var query = Mocha.utils.parseQuery(window.location.search || '');
+  if (query.grep) mocha.grep(query.grep);
+  if (query.invert) mocha.invert();
+
+  return Mocha.prototype.run.call(mocha, function(){
+    Mocha.utils.highlightTags('code');
+    if (fn) fn();
+  });
+};
